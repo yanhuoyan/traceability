@@ -131,55 +131,69 @@ public class TraceVariableAction extends AnAction {
      * 追踪设置对话框
      * 允许用户配置追踪参数
      */
-    private static class TraceSettingsDialog extends DialogWrapper {
-        private final JSpinner depthSpinner;
-        
-        public TraceSettingsDialog(Project project) {
+    private class TraceSettingsDialog extends DialogWrapper {
+        private JPanel mainPanel;
+        private JSpinner depthSpinner;
+        private static final int DEFAULT_MAX_DEPTH = 100;
+        private static final int MAX_ALLOWED_DEPTH = 200; // 增加最大允许的追踪深度
+
+        public TraceSettingsDialog(@Nullable Project project) {
             super(project);
-            this.depthSpinner = new JSpinner(new SpinnerNumberModel(30, 1, 100, 1));
             setTitle("变量追踪设置");
             init();
         }
-        
+
+        @Override
+        protected @Nullable JComponent createCenterPanel() {
+            mainPanel = new JPanel(new BorderLayout());
+            
+            // 创建设置面板
+            JPanel settingsPanel = new JPanel(new GridBagLayout());
+            settingsPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+            
+            GridBagConstraints gbc = new GridBagConstraints();
+            gbc.gridx = 0;
+            gbc.gridy = 0;
+            gbc.gridwidth = 1;
+            gbc.gridheight = 1;
+            gbc.anchor = GridBagConstraints.WEST;
+            gbc.insets = new Insets(5, 5, 5, 5);
+            
+            JLabel depthLabel = new JLabel("最大追踪深度:");
+            settingsPanel.add(depthLabel, gbc);
+            
+            gbc.gridx = 1;
+            SpinnerNumberModel spinnerModel = new SpinnerNumberModel(DEFAULT_MAX_DEPTH, 1, MAX_ALLOWED_DEPTH, 10);
+            depthSpinner = new JSpinner(spinnerModel);
+            settingsPanel.add(depthSpinner, gbc);
+            
+            gbc.gridx = 0;
+            gbc.gridy = 1;
+            gbc.gridwidth = 2;
+            JLabel noteLabel = new JLabel("<html><small>注意: 增大深度可能会导致性能下降，<br>建议从较小的值开始设置。</small></html>");
+            noteLabel.setForeground(Color.GRAY);
+            settingsPanel.add(noteLabel, gbc);
+            
+            mainPanel.add(settingsPanel, BorderLayout.CENTER);
+            
+            return mainPanel;
+        }
+
         @Nullable
         @Override
-        protected JComponent createCenterPanel() {
-            JPanel panel = new JPanel(new BorderLayout());
-            
-            JPanel settingsPanel = new JPanel(new GridBagLayout());
-            GridBagConstraints c = new GridBagConstraints();
-            c.fill = GridBagConstraints.HORIZONTAL;
-            c.insets = new Insets(5, 5, 5, 5);
-            
-            c.gridx = 0;
-            c.gridy = 0;
-            settingsPanel.add(new JLabel("最大追踪深度:"), c);
-            
-            c.gridx = 1;
-            c.gridy = 0;
-            c.weightx = 1.0;
-            settingsPanel.add(depthSpinner, c);
-            
-            panel.add(settingsPanel, BorderLayout.CENTER);
-            
-            JLabel infoLabel = new JLabel("较大的深度值可能导致处理时间延长，但可以追踪更多层次");
-            infoLabel.setForeground(Color.GRAY);
-            panel.add(infoLabel, BorderLayout.SOUTH);
-            
-            return panel;
-        }
-        
-        @Override
         protected ValidationInfo doValidate() {
-            int value = (int) depthSpinner.getValue();
-            if (value <= 0) {
+            int depthValue = (Integer) depthSpinner.getValue();
+            if (depthValue <= 0) {
                 return new ValidationInfo("深度必须大于0", depthSpinner);
+            }
+            if (depthValue > MAX_ALLOWED_DEPTH) {
+                return new ValidationInfo("深度不能超过" + MAX_ALLOWED_DEPTH, depthSpinner);
             }
             return null;
         }
-        
+
         public int getMaxDepth() {
-            return (int) depthSpinner.getValue();
+            return (Integer) depthSpinner.getValue();
         }
     }
 } 

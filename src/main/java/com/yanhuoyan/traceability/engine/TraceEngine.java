@@ -6,6 +6,7 @@ import com.intellij.psi.search.searches.ReferencesSearch;
 import com.intellij.psi.util.PsiTreeUtil;
 import com.yanhuoyan.traceability.util.PsiUtils;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
 
@@ -15,9 +16,9 @@ import java.util.*;
  */
 public class TraceEngine {
     private final Project project; // 项目对象
-    private final Map<PsiElement, Integer> processedElements; // 已处理元素集合及其深度
+    private final Map<String, Integer> processedElements; // 已处理元素集合及其深度，使用表达式和方法的组合作为标识
     private final Set<PsiMethod> processedMethods; // 已处理方法集合，避免方法递归调用死循环
-    private static final int DEFAULT_MAX_DEPTH = 30; // 默认最大追踪深度
+    private static final int DEFAULT_MAX_DEPTH = 100; // 默认最大追踪深度
     private int currentDepth; // 当前追踪深度
     private int maxDepth; // 最大追踪深度
 
@@ -40,7 +41,7 @@ public class TraceEngine {
         this.project = project;
         this.processedElements = new HashMap<>();
         this.processedMethods = new HashSet<>();
-        this.maxDepth = maxDepth > 0 ? maxDepth : DEFAULT_MAX_DEPTH;
+        this.maxDepth = maxDepth > 0 ? maxDepth : 100; // 将默认值从30更新为100
         this.currentDepth = 0;
     }
     
@@ -94,12 +95,17 @@ public class TraceEngine {
             );
             result.addTraceNode(assignmentNode);
             
+            // 重置当前深度，每个主赋值点可以独立追踪到最大深度
+            currentDepth = 0;
+            
             // 追踪赋值表达式右侧的值来源
             traceExpression(assignment.getRExpression(), assignmentNode, result, containingMethod);
         }
         
         // 如果变量是参数，追踪方法调用
         if (variable instanceof PsiParameter) {
+            // 重置当前深度，参数追踪可以独立到最大深度
+            currentDepth = 0;
             traceParameterUsages((PsiParameter) variable, result);
         }
         
@@ -122,9 +128,13 @@ public class TraceEngine {
             return;
         }
         
-        // 处理循环引用 - 只有当处理深度更浅时才重新处理
-        Integer lastDepth = processedElements.get(expression);
+        // 生成唯一标识符，结合表达式文本、位置和当前方法名
+        String expressionKey = generateExpressionKey(expression, containingMethod);
+        
+        // 处理循环引用 - 基于上下文感知的循环检测
+        Integer lastDepth = processedElements.get(expressionKey);
         if (lastDepth != null && lastDepth <= currentDepth) {
+            // 在相同上下文中已经处理过，可能是循环引用
             TraceResult.TraceNode cycleNode = new TraceResult.TraceNode(
                     TraceResult.TraceNodeType.LOCAL_ASSIGNMENT,
                     expression,
@@ -148,7 +158,7 @@ public class TraceEngine {
         }
         
         // 标记当前表达式为已处理，记录当前深度
-        processedElements.put(expression, currentDepth);
+        processedElements.put(expressionKey, currentDepth);
         currentDepth++;
         
         try {
@@ -187,6 +197,38 @@ public class TraceEngine {
         } finally {
             currentDepth--;
         }
+    }
+
+    /**
+     * 生成表达式的唯一标识符
+     * 
+     * @param expression 表达式
+     * @param containingMethod 包含方法
+     * @return 唯一标识符
+     */
+    private String generateExpressionKey(PsiExpression expression, PsiMethod containingMethod) {
+        // 获取表达式的文本内容
+        String expressionText = expression.getText();
+        
+        // 获取表达式的源代码位置信息
+        PsiFile containingFile = expression.getContainingFile();
+        int textOffset = expression.getTextOffset();
+        
+        // 获取方法信息
+        String methodInfo = "unknown";
+        if (containingMethod != null) {
+            methodInfo = containingMethod.getName();
+            if (containingMethod.getContainingClass() != null) {
+                methodInfo = containingMethod.getContainingClass().getQualifiedName() + "." + methodInfo;
+            }
+        }
+        
+        // 构建唯一标识符
+        return String.format("%s#%s#%d#%d", 
+                containingFile != null ? containingFile.getName() : "unknown", 
+                methodInfo, 
+                textOffset, 
+                currentDepth);
     }
 
     /**
@@ -238,26 +280,52 @@ public class TraceEngine {
                 
                 // 尝试查找所有赋值点
                 Collection<PsiReference> fieldRefs = ReferencesSearch.search(variable).findAll();
-                if (!fieldRefs.isEmpty()) {
-                    for (PsiReference fieldRef : fieldRefs) {
-                        PsiElement element = fieldRef.getElement();
-                        
-                        if (element.getParent() instanceof PsiAssignmentExpression) {
-                            PsiAssignmentExpression assignment = (PsiAssignmentExpression) element.getParent();
-                            if (assignment.getLExpression().equals(element)) {
-                                PsiMethod assignmentMethod = PsiTreeUtil.getParentOfType(assignment, PsiMethod.class);
-                                if (assignmentMethod != null && !processedMethods.contains(assignmentMethod)) {
+                for (PsiReference ref : fieldRefs) {
+                    if (ref.getElement().getParent() instanceof PsiAssignmentExpression) {
+                        PsiAssignmentExpression assignment = (PsiAssignmentExpression) ref.getElement().getParent();
+                        // 确保左侧是当前字段
+                        if (assignment.getLExpression() == ref.getElement()) {
+                            // 查找包含该赋值的方法
+                            PsiMethod methodWithAssignment = PsiTreeUtil.getParentOfType(assignment, PsiMethod.class);
+                            
+                            if (methodWithAssignment != null) {
+                                // 检查是否已处理过此方法，避免循环
+                                if (!processedMethods.contains(methodWithAssignment)) {
+                                    // 创建字段赋值节点
+                                    String className = methodWithAssignment.getContainingClass() != null ? 
+                                            methodWithAssignment.getContainingClass().getName() : "未知类";
+                                    
+                                    // 特别标记Controller类的赋值
+                                    boolean isController = isControllerClass(methodWithAssignment.getContainingClass());
+                                    String methodDescription = methodWithAssignment.getName();
+                                    if (isController) {
+                                        methodDescription = "Controller." + methodDescription;
+                                    }
+                                    
                                     TraceResult.TraceNode assignmentNode = new TraceResult.TraceNode(
                                             TraceResult.TraceNodeType.FIELD_ACCESS,
                                             assignment,
-                                            "字段赋值: " + assignment.getText() + " (在方法: " + assignmentMethod.getName() + ")",
+                                            "字段赋值: " + assignment.getText() + " (在 " + className + "." + methodDescription + ")",
                                             fieldNode
                                     );
                                     result.addTraceNode(assignmentNode);
                                     
-                                    processedMethods.add(assignmentMethod);
-                                    traceExpression(assignment.getRExpression(), assignmentNode, result, assignmentMethod);
-                                    processedMethods.remove(assignmentMethod);
+                                    // 暂时标记此方法已处理，避免循环
+                                    processedMethods.add(methodWithAssignment);
+                                    
+                                    // 追踪赋值表达式右侧的值
+                                    // 为Controller类方法重置深度计数器，确保完整追踪控制器中的依赖
+                                    if (isController) {
+                                        int oldDepth = currentDepth;
+                                        currentDepth = 0;
+                                        traceExpression(assignment.getRExpression(), assignmentNode, result, methodWithAssignment);
+                                        currentDepth = oldDepth;
+                                    } else {
+                                        traceExpression(assignment.getRExpression(), assignmentNode, result, methodWithAssignment);
+                                    }
+                                    
+                                    // 移除方法标记
+                                    processedMethods.remove(methodWithAssignment);
                                 }
                             }
                         }
@@ -389,13 +457,33 @@ public class TraceEngine {
      */
     private void traceMethodCall(PsiMethodCallExpression methodCall, TraceResult.TraceNode parentNode, 
                                TraceResult result, PsiMethod containingMethod) {
-        // 解析方法调用指向的方法
+        // 解析方法调用目标
         PsiMethod method = methodCall.resolveMethod();
+        
+        // 如果无法解析方法目标
         if (method == null) {
             return;
         }
         
-        // 追踪调用方法的参数
+        // 检查是否是Controller类中的方法
+        boolean isController = isControllerClass(method.getContainingClass());
+        
+        // 创建方法调用节点
+        String className = method.getContainingClass() != null ? method.getContainingClass().getName() : "未知类";
+        String methodDescription = method.getName();
+        if (isController) {
+            methodDescription = "Controller." + methodDescription;
+        }
+        
+        TraceResult.TraceNode methodNode = new TraceResult.TraceNode(
+                TraceResult.TraceNodeType.METHOD_CALL,
+                methodCall,
+                "方法调用: " + (isController ? "[Controller] " : "") + className + "." + methodDescription + "()",
+                parentNode
+        );
+        result.addTraceNode(methodNode);
+        
+        // 追踪方法调用的参数 - 总是分析参数
         PsiExpressionList argList = methodCall.getArgumentList();
         if (argList != null) {
             PsiExpression[] args = argList.getExpressions();
@@ -407,37 +495,48 @@ public class TraceEngine {
                 TraceResult.TraceNode argNode = new TraceResult.TraceNode(
                         TraceResult.TraceNodeType.PARAMETER,
                         args[i],
-                        "方法参数 " + paramName + ": " + args[i].getText(),
-                        parentNode
+                        "方法参数 " + paramName + ": " + args[i].getText() + (isController ? " [传递给Controller]" : ""),
+                        methodNode
                 );
                 result.addTraceNode(argNode);
-                traceExpression(args[i], argNode, result, containingMethod);
+                
+                // 如果是传递给Controller的参数，重置深度计数器
+                if (isController) {
+                    int oldDepth = currentDepth;
+                    currentDepth = 0;
+                    traceExpression(args[i], argNode, result, containingMethod);
+                    currentDepth = oldDepth;
+                } else {
+                    traceExpression(args[i], argNode, result, containingMethod);
+                }
             }
         }
         
-        // 如果方法已经处理过，避免循环递归，但仍允许追踪参数
+        // 如果方法已经处理过，避免循环递归，但上面仍允许追踪参数
         if (processedMethods.contains(method)) {
             TraceResult.TraceNode cycleNode = new TraceResult.TraceNode(
                     TraceResult.TraceNodeType.METHOD_CALL,
                     methodCall,
-                    "已追踪过的方法调用: " + method.getName() + "()",
-                    parentNode
+                    "已追踪过的方法调用: " + methodDescription + "() - 避免循环",
+                    methodNode
             );
             result.addTraceNode(cycleNode);
             return;
         }
         
-        // 创建方法调用节点
-        TraceResult.TraceNode methodNode = new TraceResult.TraceNode(
-                TraceResult.TraceNodeType.METHOD_CALL,
-                methodCall,
-                "方法调用: " + method.getName() + "()",
-                parentNode
-        );
-        result.addTraceNode(methodNode);
-        
         // 标记方法为已处理
         processedMethods.add(method);
+        
+        // 如果是Controller类的方法，重置深度计数器确保完整追踪
+        int oldDepth = currentDepth;
+        if (isController) {
+            currentDepth = 0;
+        }
+        
+        // 处理接口方法 - 查找实现类方法
+        if (method.getContainingClass() != null && method.getContainingClass().isInterface()) {
+            findAndTraceImplementations(method, methodNode, result);
+        }
         
         // 分析方法体中的返回语句
         if (!method.isConstructor() && method.getBody() != null) {
@@ -451,7 +550,7 @@ public class TraceEngine {
                         TraceResult.TraceNode returnNode = new TraceResult.TraceNode(
                                 TraceResult.TraceNodeType.METHOD_CALL,
                                 returnStmt,
-                                "返回值: " + returnValue.getText(),
+                                "返回值: " + returnValue.getText() + (isController ? " [来自Controller]" : ""),
                                 methodNode
                         );
                         result.addTraceNode(returnNode);
@@ -461,28 +560,282 @@ public class TraceEngine {
                     }
                 }
             } else {
-                // 如果没有显式的返回语句，尝试追踪方法中变量的使用
-                PsiCodeBlock body = method.getBody();
-                if (body != null) {
-                    PsiStatement[] statements = body.getStatements();
-                    if (statements.length > 0) {
-                        TraceResult.TraceNode bodyNode = new TraceResult.TraceNode(
-                                TraceResult.TraceNodeType.METHOD_CALL,
-                                body,
-                                "方法体执行分析",
-                                methodNode
-                        );
-                        result.addTraceNode(bodyNode);
+                // 对于没有return语句的方法
+                TraceResult.TraceNode noReturnNode = new TraceResult.TraceNode(
+                        TraceResult.TraceNodeType.UNKNOWN,
+                        method,
+                        "方法没有返回值" + (isController ? " [Controller方法]" : ""),
+                        methodNode
+                );
+                result.addTraceNode(noReturnNode);
+            }
+        }
+        
+        // 恢复原始深度
+        if (isController) {
+            currentDepth = oldDepth;
+        }
+        
+        // 完成后移除方法标记
+        processedMethods.remove(method);
+    }
+
+    /**
+     * 查找并追踪接口方法的实现
+     * 用于处理Controller通过接口调用实现类的情况
+     * 
+     * @param interfaceMethod 接口方法
+     * @param parentNode 父节点
+     * @param result 追踪结果
+     */
+    private void findAndTraceImplementations(PsiMethod interfaceMethod, TraceResult.TraceNode parentNode, 
+                                          TraceResult result) {
+        PsiClass interfaceClass = interfaceMethod.getContainingClass();
+        if (interfaceClass == null) {
+            return;
+        }
+        
+        // 添加接口信息
+        TraceResult.TraceNode interfaceNode = new TraceResult.TraceNode(
+                TraceResult.TraceNodeType.UNKNOWN,
+                interfaceMethod,
+                "接口方法: " + interfaceMethod.getName() + " 在 " + interfaceClass.getName(),
+                parentNode
+        );
+        result.addTraceNode(interfaceNode);
+        
+        // 查找实现此接口的类
+        Collection<PsiClass> implementations = findImplementingClasses(interfaceClass);
+        if (implementations.isEmpty()) {
+            TraceResult.TraceNode noImplNode = new TraceResult.TraceNode(
+                    TraceResult.TraceNodeType.UNKNOWN,
+                    interfaceMethod,
+                    "未找到接口 " + interfaceClass.getName() + " 的实现类",
+                    interfaceNode
+            );
+            result.addTraceNode(noImplNode);
+            return;
+        }
+        
+        boolean foundImplementation = false;
+        
+        // 对每个实现类查找对应的方法
+        for (PsiClass implClass : implementations) {
+            // 检查是否已经处理过这个类（避免循环）
+            if (processedMethods.stream().anyMatch(m -> m.getContainingClass() == implClass)) {
+                TraceResult.TraceNode skipNode = new TraceResult.TraceNode(
+                        TraceResult.TraceNodeType.UNKNOWN,
+                        implClass,
+                        "跳过实现类 " + implClass.getName() + " (已处理过)",
+                        interfaceNode
+                );
+                result.addTraceNode(skipNode);
+                continue;
+            }
+            
+            // 查找实现方法
+            PsiMethod[] methods = implClass.findMethodsByName(interfaceMethod.getName(), false);
+            for (PsiMethod implMethod : methods) {
+                // 确认这是接口方法的实现
+                if (isImplementationOf(implMethod, interfaceMethod)) {
+                    foundImplementation = true;
+                    
+                    // 使用更描述性的标记，特别是对Spring的服务实现类
+                    boolean isServiceImpl = isServiceImplementation(implClass);
+                    String implDescription = isServiceImpl ? "服务实现: " : "实现: ";
+                    
+                    TraceResult.TraceNode implNode = new TraceResult.TraceNode(
+                            TraceResult.TraceNodeType.METHOD_CALL,
+                            implMethod,
+                            implDescription + implMethod.getName() + " 在 " + implClass.getName(),
+                            interfaceNode
+                    );
+                    result.addTraceNode(implNode);
+                    
+                    // 如果实现方法有返回语句，分析它们
+                    if (implMethod.getBody() != null) {
+                        // 标记此方法为已处理
+                        processedMethods.add(implMethod);
                         
-                        // 分析方法中的局部变量和赋值
-                        analyzeMethodBodyStatements(statements, bodyNode, result, method);
+                        // 查找所有return语句
+                        PsiReturnStatement[] returns = PsiTreeUtil.findChildrenOfType(implMethod.getBody(), PsiReturnStatement.class)
+                                .toArray(PsiReturnStatement.EMPTY_ARRAY);
+                        
+                        if (returns.length > 0) {
+                            for (PsiReturnStatement returnStmt : returns) {
+                                PsiExpression returnValue = returnStmt.getReturnValue();
+                                if (returnValue != null) {
+                                    TraceResult.TraceNode returnNode = new TraceResult.TraceNode(
+                                            TraceResult.TraceNodeType.METHOD_CALL,
+                                            returnStmt,
+                                            "实现返回值: " + returnValue.getText() + (isServiceImpl ? " [来自服务实现]" : ""),
+                                            implNode
+                                    );
+                                    result.addTraceNode(returnNode);
+                                    
+                                    // 重置深度以确保完整追踪实现类中的返回值
+                                    int oldDepth = currentDepth;
+                                    currentDepth = 0;
+                                    
+                                    // 递归分析返回值表达式
+                                    traceExpression(returnValue, returnNode, result, implMethod);
+                                    
+                                    // 恢复深度
+                                    currentDepth = oldDepth;
+                                }
+                            }
+                        } else {
+                            // 没有返回语句的情况
+                            TraceResult.TraceNode noReturnNode = new TraceResult.TraceNode(
+                                    TraceResult.TraceNodeType.UNKNOWN,
+                                    implMethod,
+                                    "实现方法没有返回值",
+                                    implNode
+                            );
+                            result.addTraceNode(noReturnNode);
+                        }
+                        
+                        // 移除方法标记
+                        processedMethods.remove(implMethod);
                     }
                 }
             }
         }
         
-        // 移除方法处理标记，允许其他路径处理相同方法
-        processedMethods.remove(method);
+        if (!foundImplementation) {
+            TraceResult.TraceNode noImplMethodNode = new TraceResult.TraceNode(
+                    TraceResult.TraceNodeType.UNKNOWN,
+                    interfaceMethod,
+                    "找到实现类，但未找到方法 " + interfaceMethod.getName() + " 的实现",
+                    interfaceNode
+            );
+            result.addTraceNode(noImplMethodNode);
+        }
+    }
+
+    /**
+     * 查找实现给定接口的所有类
+     * 
+     * @param interfaceClass 接口类
+     * @return 实现此接口的类集合
+     */
+    private Collection<PsiClass> findImplementingClasses(PsiClass interfaceClass) {
+        // 使用ReferencesSearch查找所有引用此接口的地方
+        Collection<PsiReference> refs = ReferencesSearch.search(interfaceClass).findAll();
+        Set<PsiClass> implementations = new HashSet<>();
+        
+        for (PsiReference ref : refs) {
+            PsiElement element = ref.getElement();
+            PsiClass containingClass = PsiTreeUtil.getParentOfType(element, PsiClass.class);
+            
+            if (containingClass != null && !containingClass.isInterface() && !containingClass.isEnum()) {
+                // 检查是否实现此接口
+                PsiClassType[] implementedInterfaces = containingClass.getImplementsListTypes();
+                for (PsiClassType implementedInterface : implementedInterfaces) {
+                    PsiClass resolvedInterface = implementedInterface.resolve();
+                    if (resolvedInterface != null && (resolvedInterface.equals(interfaceClass) || 
+                            PsiTreeUtil.isAncestor(resolvedInterface, interfaceClass, true))) {
+                        implementations.add(containingClass);
+                        break;
+                    }
+                }
+                
+                // 检查父类是否实现此接口（可能通过继承获得接口实现）
+                PsiClass superClass = containingClass.getSuperClass();
+                while (superClass != null) {
+                    PsiClassType[] superImplements = superClass.getImplementsListTypes();
+                    for (PsiClassType superInterface : superImplements) {
+                        PsiClass resolvedSuperInterface = superInterface.resolve();
+                        if (resolvedSuperInterface != null && (resolvedSuperInterface.equals(interfaceClass) || 
+                                PsiTreeUtil.isAncestor(resolvedSuperInterface, interfaceClass, true))) {
+                            implementations.add(containingClass);
+                            break;
+                        }
+                    }
+                    superClass = superClass.getSuperClass();
+                }
+            }
+        }
+        
+        return implementations;
+    }
+
+    /**
+     * 检查一个方法是否是另一个接口方法的实现
+     * 
+     * @param method 可能的实现方法
+     * @param interfaceMethod 接口方法
+     * @return 如果是实现返回true
+     */
+    private boolean isImplementationOf(PsiMethod method, PsiMethod interfaceMethod) {
+        if (!method.getName().equals(interfaceMethod.getName())) {
+            return false;
+        }
+        
+        // 检查返回类型
+        PsiType methodReturnType = method.getReturnType();
+        PsiType interfaceReturnType = interfaceMethod.getReturnType();
+        if (methodReturnType == null || interfaceReturnType == null || 
+                !methodReturnType.isAssignableFrom(interfaceReturnType)) {
+            return false;
+        }
+        
+        // 检查参数列表
+        PsiParameterList methodParams = method.getParameterList();
+        PsiParameterList interfaceParams = interfaceMethod.getParameterList();
+        
+        if (methodParams.getParametersCount() != interfaceParams.getParametersCount()) {
+            return false;
+        }
+        
+        PsiParameter[] methodParameters = methodParams.getParameters();
+        PsiParameter[] interfaceParameters = interfaceParams.getParameters();
+        
+        for (int i = 0; i < methodParameters.length; i++) {
+            if (!methodParameters[i].getType().equals(interfaceParameters[i].getType())) {
+                return false;
+            }
+        }
+        
+        return true;
+    }
+
+    /**
+     * 检查是否为服务实现类
+     * 特别处理Spring等框架的服务实现模式
+     * 
+     * @param psiClass 要检查的类
+     * @return 如果是服务实现类返回true
+     */
+    private boolean isServiceImplementation(PsiClass psiClass) {
+        if (psiClass == null) {
+            return false;
+        }
+        
+        // 检查类名是否符合服务实现命名模式
+        String className = psiClass.getName();
+        if (className != null && (
+                className.endsWith("ServiceImpl") || 
+                className.endsWith("RepositoryImpl") || 
+                className.endsWith("DaoImpl") ||
+                className.endsWith("ManagerImpl"))) {
+            return true;
+        }
+        
+        // 检查类上的注解
+        PsiAnnotation[] annotations = psiClass.getAnnotations();
+        for (PsiAnnotation annotation : annotations) {
+            String qualifiedName = annotation.getQualifiedName();
+            if (qualifiedName != null && (
+                    qualifiedName.contains("Service") ||
+                    qualifiedName.contains("Repository") ||
+                    qualifiedName.contains("Component") ||
+                    qualifiedName.contains("Bean"))) {
+                return true;
+            }
+        }
+        
+        return false;
     }
 
     /**
@@ -901,12 +1254,33 @@ public class TraceEngine {
             return;
         }
         
+        // 查找父类方法 - 如果当前方法是覆盖父类的方法，优先使用父类方法进行追踪
+        PsiMethod parentMethod = findParentMethod(method);
+        if (parentMethod != null) {
+            // 在追踪结果中添加父类方法信息
+            PsiClass parentClass = parentMethod.getContainingClass();
+            String parentClassName = parentClass != null ? parentClass.getName() : "未知父类";
+            
+            TraceResult.TraceNode overrideNode = new TraceResult.TraceNode(
+                    TraceResult.TraceNodeType.METHOD_CALL,
+                    method,
+                    "覆盖父类方法: " + parentClassName + "." + parentMethod.getName() + "()",
+                    null
+            );
+            result.addTraceNode(overrideNode);
+            
+            // 使用父类方法替代当前方法进行追踪
+            method = parentMethod;
+        }
+        
         // 获取参数索引
         int paramIndex = -1;
         PsiParameterList paramList = method.getParameterList();
         PsiParameter[] parameters = paramList.getParameters();
         for (int i = 0; i < parameters.length; i++) {
-            if (parameters[i].equals(parameter)) {
+            if (parameters[i].equals(parameter) || 
+                (parentMethod != null && parameters[i].getName().equals(parameter.getName()) && 
+                parameters[i].getType().equals(parameter.getType()))) {
                 paramIndex = i;
                 break;
             }
@@ -920,7 +1294,8 @@ public class TraceEngine {
         TraceResult.TraceNode paramRootNode = new TraceResult.TraceNode(
                 TraceResult.TraceNodeType.PARAMETER,
                 parameter,
-                "方法参数: " + parameter.getName() + " 在方法 " + method.getName() + "()",
+                "方法参数: " + parameter.getName() + " 在方法 " + method.getName() + "()" +
+                (parentMethod != null ? " (父类方法)" : ""),
                 null
         );
         result.addTraceNode(paramRootNode);
@@ -929,5 +1304,252 @@ public class TraceEngine {
         processedMethods.add(method);
         traceMethodParameterUsages(method, paramIndex, paramRootNode, result);
         processedMethods.remove(method);
+    }
+    
+    /**
+     * 查找方法的父类方法
+     * 如果方法覆盖了父类方法，返回父类中的原始方法
+     * 
+     * @param method 当前方法
+     * @return 父类方法，如果没有则返回null
+     */
+    private PsiMethod findParentMethod(PsiMethod method) {
+        // 检查方法是否有父类
+        PsiClass containingClass = method.getContainingClass();
+        if (containingClass == null) {
+            return null;
+        }
+        
+        // 获取方法名和参数列表，用于在父类中查找匹配方法
+        String methodName = method.getName();
+        PsiParameterList paramList = method.getParameterList();
+        int paramCount = paramList.getParametersCount();
+        
+        // 检查方法是否有Override注解
+        boolean hasOverrideAnnotation = false;
+        for (PsiAnnotation annotation : method.getAnnotations()) {
+            if ("java.lang.Override".equals(annotation.getQualifiedName()) || "Override".equals(annotation.getQualifiedName())) {
+                hasOverrideAnnotation = true;
+                break;
+            }
+        }
+        
+        // 收集父类和接口
+        Set<PsiClass> superTypes = new HashSet<>();
+        
+        // 添加父类
+        PsiClass superClass = containingClass.getSuperClass();
+        if (superClass != null && !superClass.getQualifiedName().equals("java.lang.Object")) {
+            superTypes.add(superClass);
+        }
+        
+        // 添加接口
+        PsiClassType[] interfaces = containingClass.getImplementsListTypes();
+        for (PsiClassType interfaceType : interfaces) {
+            PsiClass interfaceClass = interfaceType.resolve();
+            if (interfaceClass != null) {
+                superTypes.add(interfaceClass);
+            }
+        }
+        
+        // 查找父类型中的匹配方法
+        for (PsiClass superType : superTypes) {
+            PsiMethod[] superMethods = superType.findMethodsByName(methodName, false);
+            for (PsiMethod superMethod : superMethods) {
+                // 检查参数列表是否匹配
+                PsiParameterList superParamList = superMethod.getParameterList();
+                if (superParamList.getParametersCount() == paramCount) {
+                    boolean parametersMatch = true;
+                    PsiParameter[] methodParams = paramList.getParameters();
+                    PsiParameter[] superParams = superParamList.getParameters();
+                    
+                    for (int i = 0; i < paramCount; i++) {
+                        if (!methodParams[i].getType().equals(superParams[i].getType())) {
+                            parametersMatch = false;
+                            break;
+                        }
+                    }
+                    
+                    if (parametersMatch) {
+                        return superMethod;
+                    }
+                }
+            }
+            
+            // 递归检查父类的父类和接口
+            PsiMethod ancestorMethod = findMethodInSuperTypes(superType, methodName, paramList);
+            if (ancestorMethod != null) {
+                return ancestorMethod;
+            }
+        }
+        
+        // 如果方法有Override注解但没有找到父类方法，尝试更广泛的搜索
+        if (hasOverrideAnnotation) {
+            return findOverriddenMethodByHierarchy(method);
+        }
+        
+        return null;
+    }
+    
+    /**
+     * 在父类层次结构中递归查找匹配的方法
+     * 
+     * @param psiClass 当前类
+     * @param methodName 要查找的方法名
+     * @param paramList 参数列表
+     * @return 匹配的方法，如果没有则返回null
+     */
+    private PsiMethod findMethodInSuperTypes(PsiClass psiClass, String methodName, PsiParameterList paramList) {
+        if (psiClass == null) {
+            return null;
+        }
+        
+        int paramCount = paramList.getParametersCount();
+        
+        // 检查父类
+        PsiClass superClass = psiClass.getSuperClass();
+        if (superClass != null && !superClass.getQualifiedName().equals("java.lang.Object")) {
+            // 在父类中查找方法
+            PsiMethod[] superMethods = superClass.findMethodsByName(methodName, false);
+            for (PsiMethod superMethod : superMethods) {
+                PsiParameterList superParamList = superMethod.getParameterList();
+                if (superParamList.getParametersCount() == paramCount) {
+                    boolean parametersMatch = true;
+                    PsiParameter[] methodParams = paramList.getParameters();
+                    PsiParameter[] superParams = superParamList.getParameters();
+                    
+                    for (int i = 0; i < paramCount; i++) {
+                        if (!methodParams[i].getType().equals(superParams[i].getType())) {
+                            parametersMatch = false;
+                            break;
+                        }
+                    }
+                    
+                    if (parametersMatch) {
+                        return superMethod;
+                    }
+                }
+            }
+            
+            // 递归检查父类的父类
+            PsiMethod ancestorMethod = findMethodInSuperTypes(superClass, methodName, paramList);
+            if (ancestorMethod != null) {
+                return ancestorMethod;
+            }
+        }
+        
+        // 检查接口
+        PsiClassType[] interfaces = psiClass.getImplementsListTypes();
+        for (PsiClassType interfaceType : interfaces) {
+            PsiClass interfaceClass = interfaceType.resolve();
+            if (interfaceClass != null) {
+                // 在接口中查找方法
+                PsiMethod[] interfaceMethods = interfaceClass.findMethodsByName(methodName, false);
+                for (PsiMethod interfaceMethod : interfaceMethods) {
+                    PsiParameterList interfaceParamList = interfaceMethod.getParameterList();
+                    if (interfaceParamList.getParametersCount() == paramCount) {
+                        boolean parametersMatch = true;
+                        PsiParameter[] methodParams = paramList.getParameters();
+                        PsiParameter[] interfaceParams = interfaceParamList.getParameters();
+                        
+                        for (int i = 0; i < paramCount; i++) {
+                            if (!methodParams[i].getType().equals(interfaceParams[i].getType())) {
+                                parametersMatch = false;
+                                break;
+                            }
+                        }
+                        
+                        if (parametersMatch) {
+                            return interfaceMethod;
+                        }
+                    }
+                }
+                
+                // 递归检查接口的父接口
+                PsiMethod ancestorMethod = findMethodInSuperTypes(interfaceClass, methodName, paramList);
+                if (ancestorMethod != null) {
+                    return ancestorMethod;
+                }
+            }
+        }
+        
+        return null;
+    }
+    
+    /**
+     * 通过更广泛的搜索找到被覆盖的方法
+     * 处理复杂继承和泛型情况
+     * 
+     * @param method 当前方法
+     * @return 被覆盖的父类方法
+     */
+    private PsiMethod findOverriddenMethodByHierarchy(PsiMethod method) {
+        // 使用IntelliJ平台API尝试查找被覆盖的方法
+        PsiMethod[] superMethods = method.findSuperMethods();
+        if (superMethods.length > 0) {
+            return superMethods[0]; // 返回第一个找到的父类方法
+        }
+        return null;
+    }
+
+    /**
+     * 检查给定类是否为Controller类
+     * 根据类名或注解判断
+     * 
+     * @param psiClass 要检查的类
+     * @return 如果是Controller则返回true
+     */
+    private boolean isControllerClass(@Nullable PsiClass psiClass) {
+        if (psiClass == null) {
+            return false;
+        }
+        
+        // 1. 通过类名检查 - 常见的Controller命名模式
+        String className = psiClass.getName();
+        if (className != null && (
+                className.endsWith("Controller") || 
+                className.endsWith("Resource") || 
+                className.endsWith("RestController") ||
+                className.endsWith("Api"))) {
+            return true;
+        }
+        
+        // 2. 通过注解检查 - Spring和JAX-RS常用注解
+        PsiAnnotation[] annotations = psiClass.getAnnotations();
+        for (PsiAnnotation annotation : annotations) {
+            String qualifiedName = annotation.getQualifiedName();
+            if (qualifiedName != null && (
+                    qualifiedName.contains("Controller") ||
+                    qualifiedName.contains("RestController") ||
+                    qualifiedName.contains("RequestMapping") ||
+                    qualifiedName.contains("Path") ||  // JAX-RS
+                    qualifiedName.contains("Api"))) {  // Swagger
+                return true;
+            }
+        }
+        
+        // 3. 检查类的方法是否有控制器相关注解
+        PsiMethod[] methods = psiClass.getMethods();
+        for (PsiMethod method : methods) {
+            PsiAnnotation[] methodAnnotations = method.getAnnotations();
+            for (PsiAnnotation annotation : methodAnnotations) {
+                String qualifiedName = annotation.getQualifiedName();
+                if (qualifiedName != null && (
+                        qualifiedName.contains("RequestMapping") ||
+                        qualifiedName.contains("GetMapping") ||
+                        qualifiedName.contains("PostMapping") ||
+                        qualifiedName.contains("PutMapping") ||
+                        qualifiedName.contains("DeleteMapping") ||
+                        qualifiedName.contains("GET") ||  // JAX-RS
+                        qualifiedName.contains("POST") || // JAX-RS
+                        qualifiedName.contains("PUT") ||  // JAX-RS
+                        qualifiedName.contains("DELETE") || // JAX-RS
+                        qualifiedName.contains("ApiOperation"))) { // Swagger
+                    return true;
+                }
+            }
+        }
+        
+        return false;
     }
 } 
