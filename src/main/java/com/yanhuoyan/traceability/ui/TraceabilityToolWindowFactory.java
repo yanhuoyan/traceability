@@ -95,9 +95,9 @@ public class TraceabilityToolWindowFactory implements ToolWindowFactory {
         
         // 创建高亮文本属性
         TextAttributes attributes = new TextAttributes();
-        attributes.setBackgroundColor(new Color(255, 255, 0, 50));  // 半透明黄色背景
+        attributes.setBackgroundColor(new Color(100, 200, 255, 80));  // 高亮蓝色
         attributes.setEffectType(EffectType.BOXED);
-        attributes.setEffectColor(Color.YELLOW);
+        attributes.setEffectColor(new Color(0, 120, 215));
         
         // 创建高亮器
         MarkupModel markupModel = editor.getMarkupModel();

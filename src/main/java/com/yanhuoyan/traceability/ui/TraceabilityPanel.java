@@ -4,12 +4,12 @@ import com.intellij.ide.DataManager;
 import com.intellij.openapi.actionSystem.CommonDataKeys;
 import com.intellij.openapi.actionSystem.DataContext;
 import com.intellij.openapi.editor.Editor;
+import com.intellij.openapi.editor.markup.*;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.fileEditor.OpenFileDescriptor;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.wm.ToolWindow;
-import com.intellij.psi.PsiElement;
-import com.intellij.psi.PsiMethod;
+import com.intellij.psi.*;
 import com.intellij.ui.JBSplitter;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.treeStructure.Tree;
@@ -24,6 +24,9 @@ import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.TreePath;
 import java.awt.*;
 import java.util.List;
+import java.util.Map;
+import java.util.ArrayList;
+import java.util.HashMap;
 
 /**
  * 追踪结果显示面板
@@ -196,7 +199,95 @@ public class TraceabilityPanel extends JPanel {
         
         // 创建描述符并导航
         OpenFileDescriptor descriptor = new OpenFileDescriptor(project, element.getContainingFile().getVirtualFile(), offset);
-        FileEditorManager.getInstance(project).openTextEditor(descriptor, true);
+        Editor editor = FileEditorManager.getInstance(project).openTextEditor(descriptor, true);
+        
+        // 高亮选定参数的所有使用
+        if (editor != null && currentTraceResult != null) {
+            highlightParameterUsages(element, editor);
+        }
+    }
+    
+    /**
+     * 高亮方法中参数的所有使用
+     * 
+     * @param element 当前导航的元素
+     * @param editor 当前编辑器
+     */
+    private void highlightParameterUsages(PsiElement element, Editor editor) {
+        // 清除之前的高亮
+        clearExistingHighlights(editor);
+        
+        // 获取目标变量
+        PsiVariable targetVariable = currentTraceResult.getTargetVariable();
+        if (targetVariable == null || !(targetVariable instanceof PsiParameter)) {
+            return;
+        }
+        
+        // 获取包含方法
+        PsiMethod method = findContainingMethod(element);
+        if (method == null) {
+            return;
+        }
+        
+        // 在方法中查找参数的所有引用
+        PsiReferenceExpression[] references = com.yanhuoyan.traceability.util.PsiUtils.findReferencesInMethod(
+                targetVariable, method);
+        
+        // 为每个引用添加高亮
+        MarkupModel markupModel = editor.getMarkupModel();
+        for (PsiReferenceExpression reference : references) {
+            // 计算引用在文本中的位置
+            int startOffset = reference.getTextOffset();
+            int endOffset = startOffset + reference.getTextLength();
+            
+            // 创建高亮文本属性（使用更明显的高亮色）
+            TextAttributes attributes = new TextAttributes();
+            attributes.setBackgroundColor(new Color(100, 200, 255, 80));  // 高亮蓝色
+            attributes.setEffectType(EffectType.BOXED);
+            attributes.setEffectColor(new Color(0, 120, 215));
+            
+            // 创建高亮器
+            RangeHighlighter highlighter = markupModel.addRangeHighlighter(
+                    startOffset, endOffset,
+                    HighlighterLayer.SELECTION - 1,
+                    attributes,
+                    HighlighterTargetArea.EXACT_RANGE
+            );
+            
+            // 保存高亮器以便后续管理
+            addToHighlightersList(editor, highlighter);
+        }
+    }
+    
+    // 存储当前编辑器中的所有高亮器
+    private final Map<Editor, List<RangeHighlighter>> editorHighlighters = new HashMap<>();
+    
+    /**
+     * 将高亮器添加到列表中进行管理
+     * 
+     * @param editor 编辑器
+     * @param highlighter 要添加的高亮器
+     */
+    private void addToHighlightersList(Editor editor, RangeHighlighter highlighter) {
+        editorHighlighters.computeIfAbsent(editor, k -> new ArrayList<>()).add(highlighter);
+    }
+    
+    /**
+     * 清除编辑器中的所有高亮
+     * 
+     * @param editor 要清除高亮的编辑器
+     */
+    private void clearExistingHighlights(Editor editor) {
+        List<RangeHighlighter> highlighters = editorHighlighters.get(editor);
+        if (highlighters != null) {
+            MarkupModel markupModel = editor.getMarkupModel();
+            for (RangeHighlighter highlighter : highlighters) {
+                if (highlighter.isValid()) {
+                    markupModel.removeHighlighter(highlighter);
+                }
+            }
+            highlighters.clear();
+        }
     }
     
     /**
