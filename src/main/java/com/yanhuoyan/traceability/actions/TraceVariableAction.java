@@ -26,7 +26,7 @@ public class TraceVariableAction extends AnAction {
     @Override
     public void update(@NotNull AnActionEvent e) {
         // Enable the action only if a variable is selected
-        Project project = e.getProject();
+        Project project = e.getData(CommonDataKeys.PROJECT);
         Editor editor = e.getData(CommonDataKeys.EDITOR);
         
         boolean enabled = false;
@@ -49,7 +49,7 @@ public class TraceVariableAction extends AnAction {
 
     @Override
     public void actionPerformed(@NotNull AnActionEvent e) {
-        Project project = e.getProject();
+        Project project = e.getData(CommonDataKeys.PROJECT);
         Editor editor = e.getData(CommonDataKeys.EDITOR);
         PsiFile psiFile = e.getData(CommonDataKeys.PSI_FILE);
         

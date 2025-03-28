@@ -3,6 +3,8 @@ package com.yanhuoyan.traceability.actions;
 import com.intellij.openapi.actionSystem.DefaultActionGroup;
 import com.intellij.openapi.actionSystem.AnAction;
 import com.intellij.openapi.actionSystem.AnActionEvent;
+import com.intellij.openapi.actionSystem.CommonDataKeys;
+import com.intellij.openapi.editor.Editor;
 import org.jetbrains.annotations.NotNull;
 
 /**
@@ -20,6 +22,6 @@ public class TraceabilityActionGroup extends DefaultActionGroup {
     @Override
     public void update(@NotNull AnActionEvent e) {
         // Only show the menu in Java files when there's an editor
-        e.getPresentation().setVisible(e.getProject() != null && e.getEditor() != null);
+        e.getPresentation().setVisible(e.getProject() != null && e.getData(CommonDataKeys.EDITOR) != null);
     }
 } 
