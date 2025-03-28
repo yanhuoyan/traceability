@@ -26,30 +26,37 @@ import java.awt.*;
 import java.util.List;
 
 /**
- * Panel for displaying trace results
+ * 追踪结果显示面板
+ * 用于在工具窗口中以树形结构显示变量追踪结果
  */
 public class TraceabilityPanel extends JPanel {
-    private final Project project;
-    private final ToolWindow toolWindow;
-    private final JTree resultTree;
-    private final JTextArea detailsTextArea;
-    private TraceResult currentTraceResult;
+    private final Project project; // 当前项目
+    private final ToolWindow toolWindow; // 工具窗口
+    private final JTree resultTree; // 结果显示树
+    private final JTextArea detailsTextArea; // 详情显示区域
+    private TraceResult currentTraceResult; // 当前追踪结果
 
+    /**
+     * 构造函数
+     * 
+     * @param project 当前项目
+     * @param toolWindow 工具窗口
+     */
     public TraceabilityPanel(@NotNull Project project, @NotNull ToolWindow toolWindow) {
         super(new BorderLayout());
         this.project = project;
         this.toolWindow = toolWindow;
         
-        // Create tree for showing trace results
+        // 创建用于显示追踪结果的树控件
         resultTree = new Tree();
         resultTree.setCellRenderer(new TraceNodeRenderer());
         resultTree.addTreeSelectionListener(this::onNodeSelected);
         
-        // Create details panel
+        // 创建详情面板
         detailsTextArea = new JTextArea();
         detailsTextArea.setEditable(false);
         
-        // Create splitter
+        // 创建分割器
         JBSplitter splitter = new JBSplitter(true, 0.7f);
         splitter.setFirstComponent(new JBScrollPane(resultTree));
         splitter.setSecondComponent(new JBScrollPane(detailsTextArea));
@@ -58,37 +65,42 @@ public class TraceabilityPanel extends JPanel {
     }
 
     /**
-     * Update the panel with trace results
+     * 更新面板显示追踪结果
+     * 
+     * @param traceResult 要显示的追踪结果
      */
     public void setTraceResult(@NotNull TraceResult traceResult) {
         this.currentTraceResult = traceResult;
         
-        // Create root node
-        DefaultMutableTreeNode rootNode = new DefaultMutableTreeNode("Trace for: " + traceResult.getTargetVariable().getName());
+        // 创建根节点
+        DefaultMutableTreeNode rootNode = new DefaultMutableTreeNode("追踪变量: " + traceResult.getTargetVariable().getName());
         
-        // Add trace nodes
+        // 添加追踪节点
         List<TraceResult.TraceNode> rootNodes = traceResult.getRootNodes();
         for (TraceResult.TraceNode node : rootNodes) {
             buildTreeNode(node, rootNode);
         }
         
-        // Update tree model
+        // 更新树模型
         DefaultTreeModel model = new DefaultTreeModel(rootNode);
         resultTree.setModel(model);
         
-        // Expand root
+        // 展开根节点
         resultTree.expandPath(new TreePath(rootNode.getPath()));
     }
     
     /**
-     * Build tree nodes from trace nodes
+     * 从追踪节点构建树节点
+     * 
+     * @param traceNode 追踪节点
+     * @param parentTreeNode 父树节点
      */
     private void buildTreeNode(@NotNull TraceResult.TraceNode traceNode, @NotNull DefaultMutableTreeNode parentTreeNode) {
-        // Create tree node for this trace node
+        // 为此追踪节点创建树节点
         DefaultMutableTreeNode treeNode = new DefaultMutableTreeNode(traceNode);
         parentTreeNode.add(treeNode);
         
-        // Add children
+        // 添加子节点
         List<TraceResult.TraceNode> children = traceNode.getChildren();
         for (TraceResult.TraceNode child : children) {
             buildTreeNode(child, treeNode);
@@ -96,51 +108,63 @@ public class TraceabilityPanel extends JPanel {
     }
     
     /**
-     * Handle node selection
+     * 处理节点选择事件
+     * 
+     * @param e 树选择事件
      */
     private void onNodeSelected(TreeSelectionEvent e) {
+        // 获取选中的树节点
         DefaultMutableTreeNode treeNode = (DefaultMutableTreeNode) resultTree.getLastSelectedPathComponent();
         if (treeNode == null || !(treeNode.getUserObject() instanceof TraceResult.TraceNode)) {
             return;
         }
         
+        // 获取关联的追踪节点和PSI元素
         TraceResult.TraceNode traceNode = (TraceResult.TraceNode) treeNode.getUserObject();
         PsiElement element = traceNode.getElement();
         
-        // Update details
+        // 更新详情面板
         updateDetailsPanel(traceNode);
         
-        // Navigate to element
+        // 导航到元素位置
         navigateToElement(element);
     }
     
     /**
-     * Update details panel with information about the selected trace node
+     * 更新详情面板，显示选中追踪节点的信息
+     * 
+     * @param traceNode 选中的追踪节点
      */
     private void updateDetailsPanel(@NotNull TraceResult.TraceNode traceNode) {
         PsiElement element = traceNode.getElement();
         
+        // 构建详情文本
         StringBuilder sb = new StringBuilder();
-        sb.append("Type: ").append(traceNode.getType()).append("\n\n");
-        sb.append("Description: ").append(traceNode.getDescription()).append("\n\n");
+        sb.append("类型: ").append(traceNode.getType()).append("\n\n");
+        sb.append("描述: ").append(traceNode.getDescription()).append("\n\n");
         
-        // Add containing method if available
+        // 如果有包含方法，添加方法信息
         PsiMethod containingMethod = findContainingMethod(element);
         if (containingMethod != null) {
-            sb.append("Containing Method: ").append(containingMethod.getName()).append("\n\n");
+            sb.append("所在方法: ").append(containingMethod.getName()).append("\n\n");
         }
         
-        // Add element text
-        sb.append("Element Text: \n").append(element.getText());
+        // 添加元素文本
+        sb.append("元素文本: \n").append(element.getText());
         
+        // 更新文本区域
         detailsTextArea.setText(sb.toString());
         detailsTextArea.setCaretPosition(0);
     }
     
     /**
-     * Find the method containing an element
+     * 查找包含指定元素的方法
+     * 
+     * @param element 要查找的元素
+     * @return 包含该元素的方法，如果没有则返回null
      */
     private PsiMethod findContainingMethod(PsiElement element) {
+        // 逐级向上查找父元素，直到找到方法
         PsiElement current = element;
         while (current != null) {
             if (current instanceof PsiMethod) {
@@ -152,35 +176,43 @@ public class TraceabilityPanel extends JPanel {
     }
     
     /**
-     * Navigate to a PSI element in the editor
+     * 在编辑器中导航到指定的PSI元素
+     * 
+     * @param element 要导航到的元素
      */
     private void navigateToElement(PsiElement element) {
+        // 检查元素有效性
         if (element == null || !element.isValid() || project.isDisposed()) {
             return;
         }
         
-        // Get containing file
+        // 获取包含文件
         if (element.getContainingFile() == null) {
             return;
         }
         
-        // Get offset
+        // 获取偏移量
         int offset = element.getTextOffset();
         
-        // Create descriptor and navigate
+        // 创建描述符并导航
         OpenFileDescriptor descriptor = new OpenFileDescriptor(project, element.getContainingFile().getVirtualFile(), offset);
         FileEditorManager.getInstance(project).openTextEditor(descriptor, true);
     }
     
     /**
-     * Custom renderer for trace nodes
+     * 追踪节点的自定义渲染器
+     * 负责在树中显示追踪节点的图标和文本
      */
     private static class TraceNodeRenderer extends DefaultTreeCellRenderer {
+        /**
+         * 获取树单元格的渲染组件
+         */
         @Override
         public Component getTreeCellRendererComponent(JTree tree, Object value, boolean selected, 
                                                     boolean expanded, boolean leaf, int row, boolean hasFocus) {
             super.getTreeCellRendererComponent(tree, value, selected, expanded, leaf, row, hasFocus);
             
+            // 检查节点类型
             if (value instanceof DefaultMutableTreeNode) {
                 Object userObject = ((DefaultMutableTreeNode) value).getUserObject();
                 
@@ -188,7 +220,7 @@ public class TraceabilityPanel extends JPanel {
                     TraceResult.TraceNode traceNode = (TraceResult.TraceNode) userObject;
                     setText(traceNode.getDescription());
                     
-                    // Set icon based on node type
+                    // 根据节点类型设置图标
                     switch (traceNode.getType()) {
                         case DECLARATION:
                             setIcon(com.intellij.icons.AllIcons.Nodes.Variable);
