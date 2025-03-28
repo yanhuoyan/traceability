@@ -6,6 +6,8 @@ import com.intellij.openapi.actionSystem.CommonDataKeys;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.editor.SelectionModel;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.DialogWrapper;
+import com.intellij.openapi.ui.ValidationInfo;
 import com.intellij.psi.*;
 import com.intellij.psi.util.PsiTreeUtil;
 import com.yanhuoyan.traceability.engine.TraceEngine;
@@ -13,6 +15,10 @@ import com.yanhuoyan.traceability.engine.TraceResult;
 import com.yanhuoyan.traceability.ui.TraceabilityToolWindowFactory;
 import com.yanhuoyan.traceability.util.PsiUtils;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+import javax.swing.*;
+import java.awt.*;
 
 /**
  * 变量追踪动作类
@@ -107,11 +113,73 @@ public class TraceVariableAction extends AnAction {
             return;
         }
         
-        // 启动追踪引擎，分析变量赋值历史
-        TraceEngine traceEngine = new TraceEngine(project);
-        TraceResult traceResult = traceEngine.traceVariable(variable, containingMethod);
+        // 显示设置对话框，让用户选择追踪深度
+        TraceSettingsDialog dialog = new TraceSettingsDialog(project);
+        if (dialog.showAndGet()) {
+            int maxDepth = dialog.getMaxDepth();
+            
+            // 启动追踪引擎，分析变量赋值历史
+            TraceEngine traceEngine = new TraceEngine(project, maxDepth);
+            TraceResult traceResult = traceEngine.traceVariable(variable, containingMethod);
+            
+            // 在工具窗口中显示追踪结果
+            TraceabilityToolWindowFactory.showResults(project, traceResult, editor);
+        }
+    }
+    
+    /**
+     * 追踪设置对话框
+     * 允许用户配置追踪参数
+     */
+    private static class TraceSettingsDialog extends DialogWrapper {
+        private final JSpinner depthSpinner;
         
-        // 在工具窗口中显示追踪结果
-        TraceabilityToolWindowFactory.showResults(project, traceResult, editor);
+        public TraceSettingsDialog(Project project) {
+            super(project);
+            this.depthSpinner = new JSpinner(new SpinnerNumberModel(30, 1, 100, 1));
+            setTitle("变量追踪设置");
+            init();
+        }
+        
+        @Nullable
+        @Override
+        protected JComponent createCenterPanel() {
+            JPanel panel = new JPanel(new BorderLayout());
+            
+            JPanel settingsPanel = new JPanel(new GridBagLayout());
+            GridBagConstraints c = new GridBagConstraints();
+            c.fill = GridBagConstraints.HORIZONTAL;
+            c.insets = new Insets(5, 5, 5, 5);
+            
+            c.gridx = 0;
+            c.gridy = 0;
+            settingsPanel.add(new JLabel("最大追踪深度:"), c);
+            
+            c.gridx = 1;
+            c.gridy = 0;
+            c.weightx = 1.0;
+            settingsPanel.add(depthSpinner, c);
+            
+            panel.add(settingsPanel, BorderLayout.CENTER);
+            
+            JLabel infoLabel = new JLabel("较大的深度值可能导致处理时间延长，但可以追踪更多层次");
+            infoLabel.setForeground(Color.GRAY);
+            panel.add(infoLabel, BorderLayout.SOUTH);
+            
+            return panel;
+        }
+        
+        @Override
+        protected ValidationInfo doValidate() {
+            int value = (int) depthSpinner.getValue();
+            if (value <= 0) {
+                return new ValidationInfo("深度必须大于0", depthSpinner);
+            }
+            return null;
+        }
+        
+        public int getMaxDepth() {
+            return (int) depthSpinner.getValue();
+        }
     }
 } 
