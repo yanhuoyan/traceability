@@ -164,19 +164,25 @@ public class TraceEngine {
         try {
             // 根据表达式类型进行不同处理
             if (expression instanceof PsiReferenceExpression) {
+                // 处理引用表达式，调用traceReference方法进行跟踪
                 traceReference((PsiReferenceExpression) expression, parentNode, result, containingMethod);
             } else if (expression instanceof PsiMethodCallExpression) {
+                // 处理方法调用表达式，调用traceMethodCall方法进行跟踪
                 traceMethodCall((PsiMethodCallExpression) expression, parentNode, result, containingMethod);
             } else if (expression instanceof PsiNewExpression) {
+                // 处理构造函数调用表达式，调用traceConstructorCall方法进行跟踪
                 traceConstructorCall((PsiNewExpression) expression, parentNode, result, containingMethod);
             } else if (expression instanceof PsiArrayInitializerExpression) {
+                // 处理数组初始化表达式，调用traceArrayInitializer方法进行跟踪
                 traceArrayInitializer((PsiArrayInitializerExpression) expression, parentNode, result, containingMethod);
             } else if (expression instanceof PsiConditionalExpression) {
+                // 处理条件表达式，调用traceConditionalExpression方法进行跟踪
                 traceConditionalExpression((PsiConditionalExpression) expression, parentNode, result, containingMethod);
             } else if (expression instanceof PsiBinaryExpression) {
+                // 处理二元表达式，调用traceBinaryExpression方法进行跟踪
                 traceBinaryExpression((PsiBinaryExpression) expression, parentNode, result, containingMethod);
             } else if (expression instanceof PsiLiteralExpression) {
-                // 处理字面量
+                // 处理字面量表达式，创建LOCAL_ASSIGNMENT类型的TraceNode并添加到结果中
                 TraceResult.TraceNode literalNode = new TraceResult.TraceNode(
                         TraceResult.TraceNodeType.LOCAL_ASSIGNMENT,
                         expression,
@@ -185,7 +191,7 @@ public class TraceEngine {
                 );
                 result.addTraceNode(literalNode);
             } else {
-                // 处理其他类型表达式
+                // 处理其他类型的表达式，创建UNKNOWN类型的TraceNode并添加到结果中
                 TraceResult.TraceNode otherNode = new TraceResult.TraceNode(
                         TraceResult.TraceNodeType.UNKNOWN,
                         expression,
@@ -1129,6 +1135,15 @@ public class TraceEngine {
      * @param result 追踪结果
      */
     private void traceMethodParameterUsages(PsiMethod method, int paramIndex, TraceResult.TraceNode parentNode, TraceResult result) {
+        if (method != null) {
+            // 查找父类方法 - 如果当前方法是覆盖父类的方法，优先使用父类方法进行追踪
+            PsiMethod parentMethod = findParentMethod(method);
+            if (parentMethod != null) {
+                // 使用父类方法替代当前方法进行追踪
+                method = parentMethod;
+            }
+        }
+
         // 查找对该方法的所有调用
         Collection<PsiReference> methodRefs = ReferencesSearch.search(method).findAll();
         
