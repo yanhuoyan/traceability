@@ -163,8 +163,8 @@ public class TraceResult {
     }
 
     /**
-     * 追踪节点类型枚举
-     * 定义了不同类型的追踪节点
+     * 追踪节点类型
+     * 定义追踪结果中各节点的类型
      */
     public enum TraceNodeType {
         DECLARATION,       // 变量声明
@@ -172,6 +172,12 @@ public class TraceResult {
         PARAMETER,         // 方法参数
         METHOD_CALL,       // 方法调用返回值
         FIELD_ACCESS,      // 字段访问
-        UNKNOWN            // 未知来源
+        UNKNOWN,           // 未知来源
+        FIELD_ASSIGNMENT,  // 字段赋值
+        FIELD_INITIALIZATION, // 字段初始化
+        CONSTRUCTOR_ASSIGNMENT, // 构造函数中的赋值
+        FIELD_REFERENCE,   // 字段引用
+        QUALIFIER,         // 调用者限定符
+        CONSTRUCTOR_ARG    // 构造函数参数
     }
 } 

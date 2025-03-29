@@ -22,6 +22,9 @@ public class TraceabilityActionGroup extends DefaultActionGroup {
         
         // 添加追踪变量动作到菜单组
         add(new TraceVariableAction());
+        
+        // 添加追踪参数动作到菜单组
+        add(new TraceParameterAction());
     }
 
     /**
