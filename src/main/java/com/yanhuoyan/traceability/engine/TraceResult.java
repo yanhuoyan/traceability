@@ -2,6 +2,7 @@ package com.yanhuoyan.traceability.engine;
 
 import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiVariable;
+import com.intellij.psi.PsiMethodCallExpression;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
@@ -68,6 +69,34 @@ public class TraceResult {
             }
         }
         return rootNodes;
+    }
+
+    /**
+     * 查找或创建对应方法调用的节点
+     * 确保相同的方法调用只有一个根节点
+     * 
+     * @param methodCall 方法调用表达式
+     * @return 对应的追踪节点
+     */
+    public TraceNode findOrCreateCallNode(PsiMethodCallExpression methodCall) {
+        // 在根节点中查找对应的方法调用节点
+        for (TraceNode rootNode : getRootNodes()) {
+            if (rootNode.getType() == TraceNodeType.METHOD_CALL && 
+                    rootNode.getElement() instanceof PsiMethodCallExpression &&
+                    methodCall.getText().equals(rootNode.getElement().getText())) {
+                return rootNode;
+            }
+        }
+        
+        // 如果没找到，创建新节点
+        TraceNode callNode = new TraceNode(
+                TraceNodeType.METHOD_CALL,
+                methodCall,
+                "方法调用: " + methodCall.getText(),
+                null
+        );
+        addTraceNode(callNode);
+        return callNode;
     }
 
     /**
@@ -178,6 +207,8 @@ public class TraceResult {
         CONSTRUCTOR_ASSIGNMENT, // 构造函数中的赋值
         FIELD_REFERENCE,   // 字段引用
         QUALIFIER,         // 调用者限定符
-        CONSTRUCTOR_ARG    // 构造函数参数
+        CONSTRUCTOR_ARG,   // 构造函数参数
+        METHOD_ARG,        // 方法参数引用
+        METHOD_RETURN      // 方法返回值
     }
 } 

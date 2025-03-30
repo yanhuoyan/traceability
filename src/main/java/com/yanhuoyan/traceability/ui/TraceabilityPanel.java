@@ -15,6 +15,7 @@ import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.treeStructure.Tree;
 import com.yanhuoyan.traceability.engine.TraceResult;
 import org.jetbrains.annotations.NotNull;
+import com.intellij.openapi.vfs.VirtualFile;
 
 import javax.swing.*;
 import javax.swing.event.TreeSelectionEvent;
@@ -179,18 +180,25 @@ public class TraceabilityPanel extends JPanel {
     }
     
     /**
-     * 在编辑器中导航到指定的PSI元素
+     * 导航到指定的PSI元素
      * 
      * @param element 要导航到的元素
      */
     private void navigateToElement(PsiElement element) {
-        // 检查元素有效性
-        if (element == null || !element.isValid() || project.isDisposed()) {
+        if (element == null) {
             return;
         }
         
         // 获取包含文件
-        if (element.getContainingFile() == null) {
+        PsiFile containingFile = element.getContainingFile();
+        if (containingFile == null) {
+            return;
+        }
+        
+        // 获取虚拟文件
+        VirtualFile virtualFile = containingFile.getVirtualFile();
+        if (virtualFile == null) {
+            // 文件可能是在内存中或者是其他非物理文件，无法打开
             return;
         }
         
@@ -198,12 +206,18 @@ public class TraceabilityPanel extends JPanel {
         int offset = element.getTextOffset();
         
         // 创建描述符并导航
-        OpenFileDescriptor descriptor = new OpenFileDescriptor(project, element.getContainingFile().getVirtualFile(), offset);
-        Editor editor = FileEditorManager.getInstance(project).openTextEditor(descriptor, true);
-        
-        // 高亮选定参数的所有使用
-        if (editor != null && currentTraceResult != null) {
-            highlightParameterUsages(element, editor);
+        try {
+            OpenFileDescriptor descriptor = new OpenFileDescriptor(project, virtualFile, offset);
+            Editor editor = FileEditorManager.getInstance(project).openTextEditor(descriptor, true);
+            
+            // 高亮选定参数的所有使用
+            if (editor != null && currentTraceResult != null) {
+                highlightParameterUsages(element, editor);
+            }
+        } catch (Exception e) {
+            // 导航过程中可能出现异常，记录并忽略
+            com.intellij.openapi.diagnostic.Logger.getInstance(TraceabilityPanel.class)
+                .warn("导航到元素时出错: " + e.getMessage(), e);
         }
     }
     
@@ -327,6 +341,30 @@ public class TraceabilityPanel extends JPanel {
                             break;
                         case FIELD_ACCESS:
                             setIcon(com.intellij.icons.AllIcons.Nodes.Field);
+                            break;
+                        case FIELD_ASSIGNMENT:
+                            setIcon(com.intellij.icons.AllIcons.Nodes.Field);
+                            break;
+                        case FIELD_INITIALIZATION:
+                            setIcon(com.intellij.icons.AllIcons.Nodes.Field);
+                            break;
+                        case FIELD_REFERENCE:
+                            setIcon(com.intellij.icons.AllIcons.Nodes.Field);
+                            break;
+                        case CONSTRUCTOR_ASSIGNMENT:
+                            setIcon(com.intellij.icons.AllIcons.Nodes.Method);
+                            break;
+                        case CONSTRUCTOR_ARG:
+                            setIcon(com.intellij.icons.AllIcons.Nodes.Parameter);
+                            break;
+                        case QUALIFIER:
+                            setIcon(com.intellij.icons.AllIcons.Nodes.Class);
+                            break;
+                        case METHOD_ARG:
+                            setIcon(com.intellij.icons.AllIcons.Nodes.Parameter);
+                            break;
+                        case METHOD_RETURN:
+                            setIcon(com.intellij.icons.AllIcons.Nodes.Method);
                             break;
                         default:
                             setIcon(com.intellij.icons.AllIcons.Nodes.Unknown);
